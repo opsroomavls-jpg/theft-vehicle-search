@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#1f4b99">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="./manifest.json">
+<title>Vehicle Search</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0;height:100%;overflow-x:hidden}
+body{font-family:Arial,sans-serif;background:#f4f4f4}
+.header{background:#1f4b99;color:#fff;padding:14px;text-align:center;font-size:17px;font-weight:700;position:sticky;top:0;z-index:100}
+.container{padding:10px;padding-bottom:30px}
+input,select,button{width:100%;padding:12px;margin-top:8px;font-size:15px;border-radius:8px;border:1px solid #ccc;box-sizing:border-box;-webkit-appearance:none}
+button{background:#1f4b99;color:#fff;border:none;font-weight:700}
+button:active{background:#163a75}
+.info{font-size:13px;color:gray;margin-top:8px}
+.table-wrapper{overflow-x:auto;margin-top:10px;-webkit-overflow-scrolling:touch}
+table{width:100%;min-width:1200px;border-collapse:collapse;background:#fff}
+th,td{border:1px solid #ddd;padding:6px;font-size:12px;white-space:nowrap}
+th{background:#1f4b99;color:#fff}
+#lockScreen{position:fixed;top:0;left:0;width:100%;height:100%;background:#000;color:#fff;display:none;justify-content:center;align-items:center;flex-direction:column;z-index:9999;padding:20px;text-align:center;overflow-y:auto}
+.small{font-size:12px;color:#ccc}
+#deviceID{background:#222;padding:10px;border-radius:6px;width:90%;word-break:break-all;margin:10px auto;font-size:13px;font-family:monospace}
+.rcount{font-size:13px;color:#1f4b99;font-weight:700;margin-top:8px}
+.btn-green{background:#27ae60}
+.btn-green:active{background:#1e8449}
+.install-banner{background:#fff3cd;border:1px solid #ffc107;border-radius:8px;padding:12px;margin-top:10px;font-size:13px;color:#856404;display:none;text-align:center}
+.install-banner button{background:#ffc107;color:#000;margin-top:6px}
+</style>
+</head>
+<body>
+
+<!-- LOCK SCREEN -->
+<div id="lockScreen">
+<h2>&#128274; Access Locked</h2>
+<p class="small">Send Device ID to admin for activation</p>
+<p id="deviceID"></p>
+<button onclick="copyID()" style="width:80%;margin:4px auto">&#128203; Copy Device ID</button>
+<button onclick="shareID()" style="width:80%;margin:4px auto">&#128241; Share via WhatsApp</button>
+<br>
+<input id="codeInput" placeholder="Enter Activation Code" style="color:#fff;background:#333;width:80%"/>
+<button class="btn-green" onclick="activate()" style="width:80%;margin:4px auto">ACTIVATE</button>
+<p id="msg" style="font-size:14px;margin-top:10px"></p>
+</div>
+
+<!-- MAIN APP -->
+<div class="header">&#128663; Secure Vehicle Search</div>
+<div class="container">
+
+<!-- Install Banner -->
+<div class="install-banner" id="installBanner">
+    &#128229; <b>Install this app!</b> Tap the button below to add to home screen.
+    <button id="installBtn" onclick="installApp()">&#128228; INSTALL APP</button>
+</div>
+
+<input type="file" id="fileInput" accept=".json,application/json,*/*"/>
+<div class="info" id="status">&#128193; Load JSON file (first time only - data saves automatically)</div>
+
+<select id="field">
+<option value="fir">FIR</option>
+<option value="registration">Registration</option>
+<option value="engine">Engine</option>
+<option value="chassis">Chassis</option>
+</select>
+
+<input type="text" id="query" placeholder="Type search term..."/>
+<button onclick="search()">&#128269; SEARCH</button>
+
+<div class="rcount" id="resultCount"></div>
+
+<div class="table-wrapper">
+<table>
+<thead><tr>
+<th>#</th><th>Department</th><th>District</th><th>Police Station</th><th>City</th><th>FIR</th><th>Date</th><th>Section</th><th>Registration</th><th>Chassis</th><th>Engine</th><th>Make</th><th>Model</th><th>Name</th><th>Address</th><th>Mobile</th><th>Status</th>
+</tr></thead>
+<tbody id="results"></tbody>
+</table>
+</div>
+</div>
+
+<script>
+// ===== SERVICE WORKER (makes it installable) =====
+if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("./sw.js").catch(function(e){console.log("SW error",e)});
+}
+
+// ===== INSTALL PROMPT =====
+var deferredPrompt = null;
+window.addEventListener("beforeinstallprompt", function(e) {
+    e.preventDefault();
+    deferredPrompt = e;
+    document.getElementById("installBanner").style.display = "block";
+});
+
+function installApp() {
+    if (deferredPrompt) {
+        deferredPrompt.prompt();
+        deferredPrompt.userChoice.then(function(result) {
+            deferredPrompt = null;
+            document.getElementById("installBanner").style.display = "none";
+        });
+    } else {
+        alert("To install:\n\n1. Tap the 3-dot menu (top right)\n2. Tap 'Add to Home Screen'\n3. Tap 'Add'\n\nThis creates an app icon!");
+    }
+}
+
+// ===== ACTIVATION SYSTEM =====
+var SECRET_KEY = "K9X7-PVT-2026";
+var EXPIRY_DAYS = 30;
+
+var firstUse = localStorage.getItem("first_use");
+if (!firstUse) {
+    firstUse = Date.now() + "-" + Math.random().toString(36).substring(2,10);
+    localStorage.setItem("first_use", firstUse);
+}
+
+var activated = localStorage.getItem("activated") === "true";
+
+function isExpired() {
+    var ts = parseInt(firstUse.split("-")[0]);
+    return (Date.now() - ts) / 864e5 > EXPIRY_DAYS;
+}
+
+function checkAccess() { return activated && !isExpired(); }
+
+function requireAccess() {
+    if (!checkAccess()) {
+        document.getElementById("lockScreen").style.display = "flex";
+        return false;
+    }
+    return true;
+}
+
+function expectedCode() {
+    return new Promise(function(resolve) {
+        var enc = new TextEncoder();
+        crypto.subtle.importKey("raw", enc.encode(SECRET_KEY),
+            {name:"HMAC",hash:"SHA-256"}, false, ["sign"])
+        .then(function(key) {
+            crypto.subtle.sign("HMAC", key, enc.encode(firstUse))
+            .then(function(sig) {
+                var arr = Array.from(new Uint8Array(sig));
+                resolve(arr.map(function(b){return b.toString(16).padStart(2,"0")}).join(""));
+            });
+        });
+    });
+}
+
+function activate() {
+    var input = document.getElementById("codeInput").value.trim();
+    expectedCode().then(function(code) {
+        if (input === code) {
+            localStorage.setItem("activated", "true");
+            document.getElementById("msg").innerText = "Activated Successfully!";
+            document.getElementById("msg").style.color = "#4CAF50";
+            setTimeout(function(){location.reload()}, 800);
+        } else {
+            document.getElementById("msg").innerText = "Invalid Code!";
+            document.getElementById("msg").style.color = "#f44336";
+        }
+    });
+}
+
+function copyID() {
+    try {
+        var t = document.createElement("textarea");
+        t.value = firstUse;
+        t.style.position = "fixed";
+        t.style.left = "-9999px";
+        document.body.appendChild(t);
+        t.focus();
+        t.select();
+        document.execCommand("copy");
+        document.body.removeChild(t);
+        alert("Device ID copied!");
+    } catch(e) {
+        prompt("Copy this Device ID:", firstUse);
+    }
+}
+
+function shareID() {
+    var msg = "Device ID:\n" + firstUse + "\n\nPlease send activation code.";
+    try {
+        if (navigator.share) {
+            navigator.share({title:"Device ID", text:msg});
+        } else {
+            window.open("https://wa.me/?text=" + encodeURIComponent(msg), "_blank");
+        }
+    } catch(e) {
+        window.open("https://wa.me/?text=" + encodeURIComponent(msg), "_blank");
+    }
+}
+
+// ===== INIT =====
+window.onload = function() {
+    document.getElementById("deviceID").innerText = firstUse;
+    if (!checkAccess()) {
+        document.getElementById("lockScreen").style.display = "flex";
+    }
+};
+
+// ===== DATABASE =====
+var records = [];
+var db;
+
+var dbReq = indexedDB.open("VehicleDB", 1);
+dbReq.onupgradeneeded = function(e) {
+    db = e.target.result;
+    if (!db.objectStoreNames.contains("data")) db.createObjectStore("data");
+};
+dbReq.onsuccess = function(e) {
+    db = e.target.result;
+    loadSaved();
+};
+dbReq.onerror = function() { loadFromLS(); };
+
+function loadFromLS() {
+    try {
+        var s = localStorage.getItem("vr");
+        if (s) {
+            records = JSON.parse(s);
+            document.getElementById("status").innerText = "Auto Loaded: " + records.length + " records";
+        }
+    } catch(e) {}
+}
+
+function loadSaved() {
+    try {
+        var tx = db.transaction("data", "readonly");
+        var st = tx.objectStore("data");
+        var g = st.get("records");
+        g.onsuccess = function() {
+            if (g.result && g.result.length) {
+                records = g.result;
+                document.getElementById("status").innerText = "Auto Loaded: " + records.length + " records";
+            } else {
+                loadFromLS();
+            }
+        };
+        g.onerror = function() { loadFromLS(); };
+    } catch(e) { loadFromLS(); }
+}
+
+function saveD(data) {
+    try {
+        var tx = db.transaction("data", "readwrite");
+        tx.objectStore("data").put(data, "records");
+    } catch(e) {}
+    try {
+        if (data.length < 10000) localStorage.setItem("vr", JSON.stringify(data));
+    } catch(e) {}
+}
+
+// ===== FILE LOADER =====
+document.getElementById("fileInput").addEventListener("change", function(e) {
+    if (!requireAccess()) return;
+    var file = e.target.files[0];
+    if (!file) return;
+    document.getElementById("status").innerText = "Loading file... please wait";
+    var reader = new FileReader();
+    reader.onload = function(ev) {
+        try {
+            var data = JSON.parse(ev.target.result);
+            records = data.records || data;
+            if (!Array.isArray(records)) { alert("Invalid JSON structure"); return; }
+            saveD(records);
+            document.getElementById("status").innerText = "Loaded: " + records.length + " records";
+        } catch(err) { alert("Invalid JSON: " + err.message); }
+    };
+    reader.onerror = function() { alert("Error reading file"); };
+    reader.readAsText(file);
+});
+
+// ===== SEARCH =====
+function search() {
+    if (!requireAccess()) return;
+    var field = document.getElementById("field").value;
+    var q = document.getElementById("query").value.toLowerCase().trim();
+    var out = document.getElementById("results");
+    var c = document.getElementById("resultCount");
+    out.innerHTML = "";
+
+    if (!q) {
+        c.innerText = "";
+        out.innerHTML = "<tr><td colspan='17' style='text-align:center;padding:20px'>Enter search term</td></tr>";
+        return;
+    }
+
+    var res = [];
+    for (var i = 0; i < records.length; i++) {
+        if ((records[i][field]||"").toString().toLowerCase().indexOf(q) !== -1)
+            res.push(records[i]);
+    }
+
+    c.innerText = res.length + " result(s) found";
+
+    if (!res.length) {
+        out.innerHTML = "<tr><td colspan='17' style='text-align:center;padding:20px'>No results found</td></tr>";
+        return;
+    }
+
+    var h = "";
+    var mx = Math.min(res.length, 200);
+    for (var i = 0; i < mx; i++) {
+        var r = res[i];
+        h += "<tr><td>"+(i+1)+"</td><td>"+(r.department||"-")+"</td><td>"+(r.district||"-")+"</td><td>"+(r.police_station||"-")+"</td><td>"+(r.city||"-")+"</td><td>"+(r.fir||"-")+"</td><td>"+(r.date||"-")+"</td><td>"+(r.section||"-")+"</td><td>"+(r.registration||"-")+"</td><td>"+(r.chassis||"-")+"</td><td>"+(r.engine||"-")+"</td><td>"+(r.make||"-")+"</td><td>"+(r.model||"-")+"</td><td>"+(r.name||"-")+"</td><td>"+(r.address||"-")+"</td><td>"+(r.mobile||"-")+"</td><td>"+(r.recovered||"Not Recovered")+"</td></tr>";
+    }
+    out.innerHTML = h;
+}
+
+document.getElementById("query").addEventListener("keyup", function(e) {
+    if (e.key === "Enter") search();
+});
+</script>
+</body>
+</html>
